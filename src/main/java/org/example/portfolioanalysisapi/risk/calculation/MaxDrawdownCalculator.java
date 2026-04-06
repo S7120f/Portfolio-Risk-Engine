@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Component
@@ -14,34 +16,44 @@ public class MaxDrawdownCalculator {
 
 
 
-    public BigDecimal calculateMaxDrawdown(List<PricePoint> pricePoints) {
-
-        BigDecimal current;
-        BigDecimal peak;
-        BigDecimal drawdown;
-        BigDecimal maxDrawdown = BigDecimal.ZERO;
+    public DrawdownResult calculateMaxDrawdown(List<PricePoint> pricePoints) {
 
         if (pricePoints.isEmpty()) {
             throw  new IllegalArgumentException("No values in list");
         }
 
-        peak = pricePoints.get(0).getClosePrice();
+        BigDecimal peak = pricePoints.get(0).getClosePrice();
+        LocalDate currentPeakDate = pricePoints.get(0).getDate();
+
+        BigDecimal maxDrawdown = BigDecimal.ZERO;
+
+        BigDecimal maxDrawdownPeakValue = peak;
+        BigDecimal maxDrawdownTroughValue = peak;
+
+        LocalDate maxDrawdownPeakDate = currentPeakDate;
+        LocalDate maxDrawdownTroughDate = currentPeakDate;
 
         for (int i = 1; i < pricePoints.size(); i++) {
-
-            current = pricePoints.get(i).getClosePrice();
+            BigDecimal current = pricePoints.get(i).getClosePrice();
+            LocalDate currentDate = pricePoints.get(i).getDate();
 
             if (current.compareTo(peak) > 0) {
                 peak = current;
+                currentPeakDate = currentDate;
             } else {
-                drawdown = (current.subtract(peak).divide(peak, 6, RoundingMode.HALF_UP));
+                BigDecimal newDrawdown = (current.subtract(peak).divide(peak, 6, RoundingMode.HALF_UP));
 
-                if (drawdown.compareTo(maxDrawdown) < 0) {
-                    maxDrawdown = drawdown;
+                if (newDrawdown.compareTo(maxDrawdown) < 0) {
+                    maxDrawdown = newDrawdown;
+                    maxDrawdownPeakValue = peak;
+                    maxDrawdownTroughValue = current;
+                    maxDrawdownPeakDate = currentPeakDate;
+                    maxDrawdownTroughDate = currentDate;
+
                 }
             }
         }
 
-        return maxDrawdown;
+        return new DrawdownResult(maxDrawdown, maxDrawdownPeakValue, maxDrawdownTroughValue, maxDrawdownPeakDate, maxDrawdownTroughDate);
     }
 }

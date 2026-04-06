@@ -3,24 +3,22 @@ package org.example.portfolioanalysisapi.risk.service;
 
 import lombok.extern.slf4j.Slf4j;
 import org.example.portfolioanalysisapi.asset.AssetType;
-import org.example.portfolioanalysisapi.marketdata.MarketDataController;
 import org.example.portfolioanalysisapi.marketdata.MarketDataService;
 import org.example.portfolioanalysisapi.marketdata.PricePoint;
 import org.example.portfolioanalysisapi.portfolio.Portfolio;
 import org.example.portfolioanalysisapi.portfolio.PortfolioAsset;
 import org.example.portfolioanalysisapi.portfolio.PortfolioRepository;
 import org.example.portfolioanalysisapi.risk.calculation.CorrelationCalculator;
+import org.example.portfolioanalysisapi.risk.calculation.DrawdownResult;
 import org.example.portfolioanalysisapi.risk.calculation.MaxDrawdownCalculator;
 import org.example.portfolioanalysisapi.risk.calculation.VolatilityCalculator;
 import org.example.portfolioanalysisapi.risk.calculation.support.ReturnSeriesCalculator;
 import org.example.portfolioanalysisapi.risk.dto.*;
 import org.springframework.stereotype.Service;
 
-import javax.sound.sampled.Port;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -52,7 +50,7 @@ public class RiskService {
         return volatilityCalculator.calculateVolatility(pricePoints);
     }
 
-    public BigDecimal getMaxDaxDrawdownForTicker(String ticker) {
+    public DrawdownResult getMaxDaxDrawdownForTicker(String ticker) {
 
         List<PricePoint> pricePoints = marketDataService.getPriceHistory(ticker);
         return maxDrawdownCalculator.calculateMaxDrawdown(pricePoints);
@@ -136,12 +134,17 @@ public class RiskService {
         List<PortfolioAsset> holdings = portfolio.getHoldings();
         validatePortfolioHasHoldings(holdings);
 
-        BigDecimal portfolioMaxDrawdown = maxDrawdownCalculator.calculateMaxDrawdown(buildPortfolioPriceSeries(holdings));
+
+        DrawdownResult result = maxDrawdownCalculator.calculateMaxDrawdown(buildPortfolioPriceSeries(holdings));
 
         PortfolioMaxDrawdownResponse response = new PortfolioMaxDrawdownResponse();
         response.setPortfolioId(portfolio.getId());
         response.setPortfolioName(portfolio.getName());
-        response.setMaxDrawdown(portfolioMaxDrawdown);
+        response.setMaxDrawdown(result.maxDrawdown());
+        response.setPeakValue(result.peakValue());
+        response.setPeakDate(result.peakDate());
+        response.setTroughValue(result.troughValue());
+        response.setTroughDate(result.troughDate());
 
         return response;
     }
@@ -190,7 +193,80 @@ public class RiskService {
         portfolioResponse.setCorrelations(correlationResults);
 
         return portfolioResponse;
+    }
 
+    public ScenarioShockResponse calculateScenarioForPortfolio(long portfolioId, ScenarioShockRequest request) {
+
+        Portfolio portfolio = getPortfolioOrThrow(portfolioId);
+        List<PortfolioAsset> holdings = portfolio.getHoldings();
+        validatePortfolioHasHoldings(holdings);
+
+        BigDecimal totalValueBefore = BigDecimal.ZERO;
+        BigDecimal totalValueAfter = BigDecimal.ZERO;
+
+        List<PortfolioHoldingScenarioResponse> holdingsResponses = new ArrayList<>();
+
+        for (PortfolioAsset holding : holdings) {
+
+            String ticker = holding.getAsset().getTicker();
+            List<PricePoint> pricePointList = marketDataService.getPriceHistory(ticker);
+
+            PricePoint lastestPricePoint = pricePointList.get(pricePointList.size() - 1);
+            BigDecimal closePrice = lastestPricePoint.getClosePrice();
+
+            BigDecimal value = closePrice.multiply(holding.getQuantity());
+            totalValueBefore = totalValueBefore.add(value);
+
+            AssetType assetType = holding.getAsset().getAssetType();
+
+            BigDecimal shock;
+
+            if (assetType == AssetType.STOCK) {
+                shock = request.getStockShock();
+            } else if (assetType == AssetType.CRYPTO) {
+                shock = request.getCryptoShock();
+            } else {
+                shock = request.getEtfShock();
+            }
+
+            BigDecimal onePlusShock = BigDecimal.ONE.add(shock);
+            BigDecimal valueAfter = value.multiply(onePlusShock);
+
+            totalValueAfter = totalValueAfter.add(valueAfter);
+
+            PortfolioHoldingScenarioResponse holdingsResult = new PortfolioHoldingScenarioResponse();
+            holdingsResult.setAssetType(assetType);
+            holdingsResult.setQuantity(holding.getQuantity());
+            holdingsResult.setTicker(ticker);
+            holdingsResult.setLatestPrice(closePrice);
+            holdingsResult.setValueBefore(value);
+            holdingsResult.setAppliedShock(shock);
+            holdingsResult.setValueAfter(valueAfter);
+
+            BigDecimal holdingChange = valueAfter.subtract(value);
+            holdingsResult.setChange(holdingChange);
+
+            holdingsResponses.add(holdingsResult);
+
+        }
+
+        if (totalValueBefore.compareTo(BigDecimal.ZERO) == 0) {
+            throw new IllegalStateException("Total portfolio value is zero");
+        }
+
+        BigDecimal totalChange = totalValueAfter.subtract(totalValueBefore);
+        BigDecimal totalChangePercent = totalChange.divide(totalValueBefore, 6, RoundingMode.HALF_UP);
+
+        ScenarioShockResponse response = new ScenarioShockResponse();
+        response.setPortfolioId(portfolio.getId());
+        response.setPortfolioName(portfolio.getName());
+        response.setTotalValueBefore(totalValueBefore);
+        response.setTotalValueAfter(totalValueAfter);
+        response.setTotalChange(totalChange);
+        response.setTotalChangePercent(totalChangePercent);
+        response.setHoldings(holdingsResponses);
+
+        return response;
     }
 
     // Helper
